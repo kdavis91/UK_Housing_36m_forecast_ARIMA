@@ -1,0 +1,296 @@
+---
+title: "ARIMA UK Housing index forecasting"
+output: rmarkdown::github_document
+always_allow_html: true
+---
+<style>
+
+  .col2 {
+    columns: 2 200px;         /* number of columns and width in pixels*/
+    -webkit-columns: 2 200px; /* chrome, safari */
+    -moz-columns: 2 200px;    /* firefox */
+  }
+  .col3 {
+    columns: 3 100px;
+    -webkit-columns: 3 100px;
+    -moz-columns: 3 100px;
+  }
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+
+```{r, eval=FALSE}
+#install.packages(c("kableExtra","tidyverse","patchwork","bestNormalize","caret","forecast","tseries"))
+library(kableExtra)
+library(tidyverse)
+library(patchwork)
+library(bestNormalize)
+library(caret)
+library(knitr)
+library(ggpubr)
+library(grid)
+library(gridExtra)
+require(forecast)
+require(tseries)
+```
+
+```{r, echo=FALSE,results='hide',message=FALSE,warning=FALSE}
+#install.packages(c("kableExtra","tidyverse","patchwork","bestNormalize","caret","forecast","tseries"))
+library(kableExtra)
+library(tidyverse)
+library(patchwork)
+library(bestNormalize)
+library(caret)
+require(forecast)
+require(tseries)
+library(knitr)
+library(ggpubr)
+library(grid)
+library(gridExtra)
+```
+
+## Data
+
+We used open source data on the UK Housing Price Index (HPI); 1970 to August 2020. (Note: the House type cannot be differentiated until 2005)
+
+The UK House Price Index (HPI) uses house sales data from HM Land Registry, Registers of Scotland, and Land and Property Services Northern Ireland and is calculated by the Office for National Statistics. The index applies a statistical method, called a hedonic regression model, to the various sources of data on property price and attributes to produce estimates of the change in house prices each period.
+
+As of July 2020 the average house price in the UK is `£237,963`, and the index stands at `124.81`. Property prices have risen by `0.5%` compared to the previous month, and risen by `2.3%` compared to the previous year.
+
+You can verify the data here https://landregistry.data.gov.uk/app/ukhpi 
+
+
+
+```{r,echo=FALSE,results='hide',message=FALSE,warning=FALSE}
+df<-read.csv("ukhpi-united-kingdom-from-1791-02-01-to-2020-08-01.csv")
+df<-df[22:628,c(4,7,12,16,20,24)]
+```
+
+<div class="col2">
+```{r , eval=TRUE}
+head(df[,1:2]) %>%
+  kbl() %>%
+  kable_styling()
+tail(df[,1:2]) %>%
+  kbl() %>%
+  kable_styling()
+```
+</div>
+
+```{r}
+summary(df[,2:5]) %>% 
+  kbl() %>% 
+  kable_styling()
+
+```
+
+
+## Building a time series for all House types
+
+<div class="col1">
+```{r}
+names(df)[2] <- "Units"
+dfUnits <- df$Units
+tdf <- ts(dfUnits, start = c(1970, 1), frequency = 12)
+head(tdf,12)
+
+```
+</div>
+
+## Exploratory ARIMA
+
+```{r}
+fit <- auto.arima(tdf)
+fit
+accfit <-accuracy(fit) 
+accfit
+
+```
+
+<div class="col2">
+```{r}
+pred_values <- forecast(fit, 12)
+
+plot(pred_values,
+     
+     xlab = "Date", 
+     ylab = "Price/£",
+     
+     
+     main = "ARIMA 12m Forecast for House price Index"
+     
+     
+     )
+
+
+plot(pred_values$residuals, 
+     xlab = "Date", 
+     ylab = "",
+     
+     
+     main = "ARIMA Forecast Residuals"
+     
+     
+     )
+
+pred_values  %>% kbl() %>%  kable_styling()
+```
+</div>
+
+```{r}
+UK_Housing_Index <- window(tdf, start = tail(time(tdf), 67)[1])
+ggseasonplot(UK_Housing_Index, year.labels = TRUE, col = rainbow(20))
+
+```
+
+<div class="col2">
+```{r}
+qqnorm(fit$residuals)
+Box.test(fit$residuals, type = "Ljung-Box")
+fit$loglik
+```
+</div>
+
+The data has a high p-value, so the autocorrelations not significantly different than 0.
+We apply a log transformation to force normality.
+
+```{r}
+ltdf <- log(tdf)
+head(ltdf,12)
+```
+
+
+Refitting log transformation with seasonal decomposition
+
+```{r}
+fit2 <- stl(ltdf, s.window = "period")
+plot(fit2, main = "Seasonal Decomposition of log(Units)")
+
+```
+
+
+## ARIMA model
+
+```{r}
+fit3 <- auto.arima(ltdf)
+fitAccuracy <- data.frame(accuracy(fit))
+fitAccuracy2 <- data.frame(accuracy(fit3))
+fitAccuracyFinal <- rbind(fitAccuracy, fitAccuracy2)
+fitAccuracyFinal %>% 
+  kbl() %>% 
+  kable_styling()
+
+```
+
+<div class="col2">
+```{r}
+qqnorm(fit3$residuals)
+Box.test(fit3$residuals, type = "Ljung-Box")
+fit3$loglik
+```
+</div>
+
+
+```{r}
+plot(forecast(fit3, 12), xlab = "Date", ylab = "Units", main = "ARIMA Forecast for House price Index")
+```
+
+```{r}
+pred_values <- data.frame(forecast(fit, 12))
+pred_values2 <- data.frame(forecast(fit3, 12))
+pred_values2[,1:5] <- exp(pred_values2[,1:5])
+mergedDF <- data.frame(Date = rownames(pred_values), Original_Data_Forecast = pred_values$Point.Forecast, Log_Transformed_Data_Forecast = pred_values2$Point.Forecast, Difference = round(pred_values$Point.Forecast - pred_values2$Point.Forecast, 2))
+mergedDF
+write.csv(mergedDF,"Out.csv")
+```
+
+
+```{r,echo=T,results='hide',fig.show='hide'}
+p1<-autoplot(ltdf)
+p2<-autoplot(stl(ltdf, s.window="periodic", robust=TRUE))
+p3<-autoplot(fit3)
+p4<-ggtsdisplay(ltdf)
+```
+
+```{r}
+ggarrange(p1,p2,p3,p4)
+```
+
+
+```{r}
+UK_Housing_Index <- window(ltdf, start = tail(time(ltdf), 67)[1])
+tfitAccuracy2 <- t(fitAccuracy2)
+a<-autoplot(UK_Housing_Index) + geom_forecast(h=36)+
+  
+  ggtitle("ARIMA Average UK House Price 36 month Forecast")+xlab("Year") +ylab("log(Price/£)")+
+  
+  annotation_custom(tableGrob(tfitAccuracy2), xmin=2020, xmax=2024, ymin=12.2, ymax=12.3)
+a
+
+```
+
+
+Bringing in the property type split.
+
+
+```{r,echo=T,results='hide',fig.show='hide'}
+# Detached
+dfd<-df
+names(dfd)[3] <- "Units2"
+dfdUnits2 <- dfd$Units2
+tdfd <- ts(dfdUnits2, start = c(1970, 1), frequency = 12)
+ltdfd <- log(tdfd)
+fit3d <- auto.arima(ltdfd)
+subtsd<-(window(ltdfd, start = tail(time(tdfd), 67)[1]))
+# Semi-
+dfsd<-df
+names(dfsd)[4] <- "Units3"
+dfsdUnits3 <- dfsd$Units3
+tdfsd <- ts(dfsdUnits3, start = c(1970, 1), frequency = 12)
+ltdfsd <- log(tdfsd)
+fit3sd <- auto.arima(ltdfsd)
+subtsd<-(window(ltdfsd, start = tail(time(tdfsd), 67)[1]))
+# Terraced
+dft<-df
+names(dft)[5] <- "Units4"
+dftUnits4 <- dft$Units4
+tdft <- ts(dftUnits4, start = c(1970, 1), frequency = 12)
+ltdft <- log(tdft)
+fit3t <- auto.arima(ltdft)
+subtsd<-(window(ltdft, start = tail(time(tdft), 67)[1]))
+
+# Charts
+
+a2<-autoplot(UK_Housing_Index) + geom_forecast(h=36)+
+  
+  ggtitle("Average UK House Price ")+xlab("Year") +ylab("log(Price/£)")
+
+b<-autoplot(subtsd) + geom_forecast(h=36)+
+  
+  ggtitle("Average UK Detached House Price")+xlab("Year") +ylab("log(Price/£)")
+
+c<-autoplot(subtsd) + geom_forecast(h=36)+
+  
+  ggtitle("Average UK Semi-Detached House Price")+xlab("Year") +ylab("log(Price/£)")
+
+d<-autoplot(subtsd) + geom_forecast(h=36)+
+  
+  ggtitle("Average UK Terraced House Price")+xlab("Year") +ylab("log(Price/£)")
+
+
+```
+
+
+```{r}
+figure<-ggarrange(a2, b, c,d, ncol = 2, nrow = 2)
+annotate_figure(figure,
+                top = text_grob("Average UK House Price ARIMA 36-month Forecast\n    ", face = "bold", size = 15))
+
+
+
+```
